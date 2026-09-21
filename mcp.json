@@ -1,0 +1,12 @@
+{
+  "name": "agentic-memory-mcp",
+  "description": "Agentic Memory MCP Server for Copilot CLI with persistent, searchable memory using hybrid retrieval",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "mcp",
+  "mcp": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "protocol": "stdio"
+  }
+}
