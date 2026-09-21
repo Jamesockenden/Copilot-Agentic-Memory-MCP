@@ -18,6 +18,11 @@ rank fusion combines the results. The server also exposes tools for storing
 knowledge, context, skills, and lessons. Startup/shutdown maintenance removes
 expired context and promotes frequently accessed or explicitly fixed lessons.
 
+The repository's `.github/copilot-instructions.md` defines the expected
+Recall → Reason/Act → Learn/Store workflow. It tells Copilot to recall before
+non-trivial work, learn reusable outcomes before completion, and avoid storing
+secrets or user-specific details.
+
 ## Quick start
 
 Requirements: Python 3.10+ and a working C/C++ build environment if one of

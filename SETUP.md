@@ -45,6 +45,12 @@ tools:
 For Windows, use the repository directory and
 `.venv\Scripts\python.exe`. Do not commit this user-specific registration.
 
+The repository also includes `.github/copilot-instructions.md`. Keep that file
+in the checkout: it provides the agent-facing rules to recall before work,
+act using current source and tests, learn reusable outcomes, and reject
+sensitive or user-specific memory. If the MCP is installed in a separate
+local checkout, copy the file's contents to that checkout as well.
+
 ## 3. Optional local smoke test
 
 The MCP process uses stdio and waits for protocol input, so it is normally
