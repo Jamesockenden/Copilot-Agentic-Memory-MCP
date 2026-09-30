@@ -60,8 +60,8 @@ def verify_system():
     db.close()
     print("\n[DONE] System verification complete!")
     print("\n[SUCCESS] Agentic Memory MCP is ready to use!")
-    print("  - Start server: python -m agentic_memory_mcp")
-    print("  - Add to Copilot CLI configuration (copilot-setup-steps.yml)")
+    print("  - Start server from the project directory: python __main__.py")
+    print("  - Register the local MCP with: copilot mcp add agentic-memory -- <python> <__main__.py>")
     print("  - Query with recall() tool during sessions")
 
 if __name__ == "__main__":

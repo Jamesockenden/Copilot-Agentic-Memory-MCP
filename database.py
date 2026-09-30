@@ -5,8 +5,7 @@ from config import DB_PATH
 
 def init_db() -> sqlite3.Connection:
     """Initialize database with required schema."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(DB_PATH))
+    db = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     db.row_factory = sqlite3.Row
     cursor = db.cursor()
 
@@ -48,7 +47,9 @@ def init_db() -> sqlite3.Connection:
             access_count INTEGER NOT NULL DEFAULT 0,
             last_accessed_at TIMESTAMP,
             pattern_hash TEXT,
-            fixed_lesson INTEGER NOT NULL DEFAULT 0
+            fixed_lesson INTEGER NOT NULL DEFAULT 0,
+            memory_kind TEXT NOT NULL DEFAULT 'rule',
+            consecutive_successes INTEGER NOT NULL DEFAULT 0
         )
     """)
 
@@ -88,6 +89,49 @@ def init_db() -> sqlite3.Connection:
         )
     """)
 
+    # Outcome events and current utility are kept separate from vector data so
+    # feedback never requires mutating embeddings.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memory_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_type TEXT NOT NULL,
+            memory_id INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            session_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_memory_feedback_memory
+        ON memory_feedback(memory_type, memory_id, created_at)
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memory_metrics (
+            memory_type TEXT NOT NULL,
+            memory_id INTEGER NOT NULL,
+            total_uses INTEGER NOT NULL DEFAULT 0,
+            successes INTEGER NOT NULL DEFAULT 0,
+            failures INTEGER NOT NULL DEFAULT 0,
+            corrections INTEGER NOT NULL DEFAULT 0,
+            success_streak INTEGER NOT NULL DEFAULT 0,
+            last_used_at TIMESTAMP,
+            last_success_at TIMESTAMP,
+            PRIMARY KEY (memory_type, memory_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memory_scope (
+            memory_type TEXT NOT NULL,
+            memory_id INTEGER NOT NULL,
+            working_directory TEXT,
+            branch TEXT,
+            file_paths TEXT NOT NULL DEFAULT '[]',
+            stale INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (memory_type, memory_id)
+        )
+    """)
+
     # Migrate databases created by older versions.
     cursor.execute("PRAGMA table_info(short_lived_context)")
     columns = {row[1] for row in cursor.fetchall()}
@@ -96,6 +140,8 @@ def init_db() -> sqlite3.Connection:
         ("last_accessed_at", "TIMESTAMP"),
         ("pattern_hash", "TEXT"),
         ("fixed_lesson", "INTEGER NOT NULL DEFAULT 0"),
+        ("memory_kind", "TEXT NOT NULL DEFAULT 'rule'"),
+        ("consecutive_successes", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in columns:
             cursor.execute(f"ALTER TABLE short_lived_context ADD COLUMN {name} {definition}")

@@ -1,5 +1,6 @@
 """MCP Server implementation supporting both FastMCP (v1) and MCPServer (v2)."""
 import atexit
+import json
 import sqlite3
 import sys
 import time
@@ -17,7 +18,13 @@ except (ImportError, ModuleNotFoundError):
 from database import init_db
 from memory_store import MemoryStore
 from embeddings import hybrid_search
-from config import AUTO_LEARNING_ENABLED, AUTO_LEARNING_TTL_DAYS, ensure_paths
+from config import (
+    AUTO_LEARNING_ENABLED,
+    AUTO_LEARNING_TTL_DAYS,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+    ensure_paths,
+)
 
 # Initialize MCP server
 mcp = FastMCP("agentic-memory")
@@ -83,6 +90,33 @@ def ensure_init():
         startup()
 
 
+def _compact_memory(
+    document: dict,
+    tier: str,
+    text_field: str,
+    include_full_content: bool = False,
+) -> dict:
+    """Bound recall payload size and avoid returning full documents by default."""
+    text = document.get(text_field) or document.get(
+        "full_content" if text_field == "content" else "full_steps", ""
+    ) or ""
+    excerpt_limit = 400
+    result = {
+        "memory_id": document.get("memory_id"),
+        "tier": tier,
+        "title": document.get("title") or document.get("name"),
+        "excerpt": text[:excerpt_limit],
+    }
+    for field in ("category", "lesson", "tags", "memory_kind"):
+        if document.get(field):
+            result[field] = document[field]
+    if include_full_content:
+        content_limit = 3000
+        result["content"] = text[:content_limit]
+        result["content_truncated"] = len(text) > content_limit
+    return result
+
+
 # Register lifecycle handlers if supported by FastMCP v1
 if hasattr(mcp, "server") and hasattr(mcp.server, "on_startup"):
     mcp.server.on_startup(startup)
@@ -94,20 +128,30 @@ atexit.register(shutdown)
 # ============ RECALL TOOL ============
 
 @mcp.tool()
-def recall(query: str, limit: int = 5) -> str:
+def recall(
+    query: str,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+    working_directory: Optional[str] = None,
+    branch: Optional[str] = None,
+    touched_files: Optional[List[str]] = None,
+    include_full_content: bool = False,
+) -> str:
     """
-    Retrieve relevant memories using hybrid search (vector + FTS + RRF).
+    Retrieve compact, relevant memories using intent-weighted hybrid search.
 
     Args:
         query: What you want to remember or find
         limit: Number of results to return (default: 5)
+        working_directory, branch, touched_files: Optional retrieval scope
+        include_full_content: Include a bounded full-content field when needed
 
     Returns:
-        Ranked list of relevant memories from all three tiers
+        Compact ranked excerpts and tier-qualified IDs from all three tiers
     """
     ensure_init()
     if not memory_store:
         return "Memory store not initialized"
+    limit = max(1, min(limit, MAX_SEARCH_LIMIT))
 
     results = {
         "durable_knowledge": [],
@@ -122,12 +166,17 @@ def recall(query: str, limit: int = 5) -> str:
             query,
             "durable_knowledge",
             "fts_durable_knowledge",
-            top_k=limit
+            top_k=limit,
+            working_directory=working_directory,
+            branch=branch,
+            touched_files=touched_files,
         )
         for row_id in dk_ids:
             doc = memory_store.get_durable_knowledge(row_id)
             if doc:
-                results["durable_knowledge"].append(doc)
+                results["durable_knowledge"].append(
+                    _compact_memory(doc, "durable_knowledge", "content", include_full_content)
+                )
     except Exception as e:
         results["durable_knowledge"] = [{"error": str(e)}]
 
@@ -138,12 +187,17 @@ def recall(query: str, limit: int = 5) -> str:
             query,
             "short_lived_context",
             "fts_short_lived_context",
-            top_k=limit
+            top_k=limit,
+            working_directory=working_directory,
+            branch=branch,
+            touched_files=touched_files,
         )
         for row_id in ctx_ids:
             doc = memory_store.get_context(row_id)
             if doc:
-                results["short_lived_context"].append(doc)
+                results["short_lived_context"].append(
+                    _compact_memory(doc, "short_lived_context", "content", include_full_content)
+                )
     except Exception as e:
         results["short_lived_context"] = [{"error": str(e)}]
 
@@ -154,22 +208,33 @@ def recall(query: str, limit: int = 5) -> str:
             query,
             "task_skills",
             "fts_task_skills",
-            top_k=limit
+            top_k=limit,
+            working_directory=working_directory,
+            branch=branch,
+            touched_files=touched_files,
         )
         for row_id in skill_ids:
             skill = memory_store.get_skill(row_id)
             if skill:
-                results["task_skills"].append(skill)
+                results["task_skills"].append(
+                    _compact_memory(skill, "task_skills", "steps", include_full_content)
+                )
     except Exception as e:
         results["task_skills"] = [{"error": str(e)}]
 
-    return str(results)
+    return json.dumps(results, ensure_ascii=False)
 
 
 # ============ STORE TOOLS ============
 
 @mcp.tool()
-def store_okf(title: str, content: str, category: str) -> str:
+def store_okf(
+    title: str,
+    content: str,
+    category: str,
+    working_directory: Optional[str] = None,
+    branch: Optional[str] = None,
+) -> str:
     """
     Store Durable Knowledge in OKF (Objectives & Key Findings) format.
     This is long-term knowledge the agent can rely on.
@@ -187,14 +252,24 @@ def store_okf(title: str, content: str, category: str) -> str:
         return "Memory store not initialized"
 
     try:
-        doc_id = memory_store.store_okf(title, content, category)
+        doc_id = memory_store.store_okf(
+            title, content, category, working_directory, branch
+        )
         return f"Stored OKF document: {title} (ID: {doc_id})"
     except Exception as e:
         return f"Error storing OKF: {str(e)}"
 
 
 @mcp.tool()
-def store_context(title: str, content: str, lesson: Optional[str] = None, ttl_days: int = 30) -> str:
+def store_context(
+    title: str,
+    content: str,
+    lesson: Optional[str] = None,
+    ttl_days: int = 30,
+    memory_kind: str = "rule",
+    working_directory: Optional[str] = None,
+    branch: Optional[str] = None,
+) -> str:
     """
     Store Short-Lived Context (episodic notes, fixes, lessons).
     These expire after TTL and prevent repeated mistakes.
@@ -213,14 +288,24 @@ def store_context(title: str, content: str, lesson: Optional[str] = None, ttl_da
         return "Memory store not initialized"
 
     try:
-        doc_id = memory_store.store_context(title, content, lesson, ttl_days)
+        if memory_kind not in {"rule", "anti_pattern"}:
+            return "Error storing context: memory_kind must be rule or anti_pattern"
+        doc_id = memory_store.store_context(
+            title, content, lesson, ttl_days, memory_kind, working_directory, branch
+        )
         return f"Stored context note: {title} (ID: {doc_id}, expires in {ttl_days} days)"
     except Exception as e:
         return f"Error storing context: {str(e)}"
 
 
 @mcp.tool()
-def store_skill(name: str, steps: str, tags: Optional[str] = None) -> str:
+def store_skill(
+    name: str,
+    steps: str,
+    tags: Optional[str] = None,
+    working_directory: Optional[str] = None,
+    branch: Optional[str] = None,
+) -> str:
     """
     Store Task Skill (reusable workflow or procedure).
     Skills are executed consistently across sessions.
@@ -238,7 +323,7 @@ def store_skill(name: str, steps: str, tags: Optional[str] = None) -> str:
         return "Memory store not initialized"
 
     try:
-        skill_id = memory_store.store_skill(name, steps, tags)
+        skill_id = memory_store.store_skill(name, steps, tags, working_directory, branch)
         return f"Stored skill: {name} (ID: {skill_id})"
     except Exception as e:
         return f"Error storing skill: {str(e)}"
@@ -286,6 +371,32 @@ def mark_lesson_fixed(context_id: int) -> str:
         return f"Context note {context_id} marked as a fixed lesson"
     except Exception as e:
         return f"Error marking lesson: {str(e)}"
+
+
+@mcp.tool()
+def record_outcome(
+    memory_ids_used: List[str],
+    outcome: str,
+    signal: str,
+    session_id: Optional[str] = None,
+) -> str:
+    """
+    Report a verified result for recalled memories and update their utility scores.
+
+    Use the tier-qualified memory_id returned by recall (for example,
+    short_lived_context:42). A session_id is required to count independent
+    sessions toward provisional anti-pattern capture.
+    """
+    ensure_init()
+    if not memory_store:
+        return "Memory store not initialized"
+    try:
+        result = memory_store.record_outcome(
+            memory_ids_used, outcome, signal, session_id
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return f"Error recording outcome: {str(e)}"
 
 
 # ============ LIST/BROWSE TOOLS ============

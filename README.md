@@ -1,109 +1,112 @@
-# Agentic Memory MCP for Copilot CLI
+# Agentic Memory MCP Server for Copilot CLI
 
-An optional local [Model Context Protocol](https://modelcontextprotocol.io/)
-server that gives Copilot CLI persistent, searchable memory without sending a
-whole conversation history into every prompt.
+An MCP server that provides persistent, searchable memory for Copilot CLI sessions using hybrid retrieval (vector search + FTS5 + RRF).
 
-## What it provides
+## Architecture
 
-The server stores three deliberately separate memory tiers:
+### Three Memory Tiers
+1. **Durable Knowledge**: Long-term facts (Markdown OKF format)
+2. **Short-Lived Context**: Episodic notes, fixes, lessons learned
+3. **Task Skills**: Reusable workflows and procedures
 
-- **Durable knowledge**: long-lived Markdown documents in OKF-style format.
-- **Short-lived context**: expiring notes, fixes, and lessons stored in SQLite.
-- **Task skills**: reusable Markdown workflows and procedures.
+### Hybrid Retrieval Pipeline
+- **Vector Search**: cosine similarity over stored sentence-transformer embeddings
+- **Full-Text Search**: FTS5 for exact keywords and symbols
+- **Intent-aware RRF**: Exact paths, symbols, and error identifiers favor FTS5; conceptual queries favor vector search
+- **Outcome-aware ranking**: Verified uses adjust a per-memory Bayesian success estimate with temporal decay
+- **Scope and citation guards**: Optional branch/worktree/touched-file filters and on-demand file/line validation
 
-`recall` performs hybrid retrieval: sentence-transformer embeddings provide
-semantic search, SQLite FTS5 handles exact terms and symbols, and reciprocal
-rank fusion combines the results. The server also exposes tools for storing
-knowledge, context, skills, and lessons. Startup/shutdown maintenance removes
-expired context and promotes frequently accessed or explicitly fixed lessons.
+### Outcome Feedback and Promotion
 
-The repository's `.github/copilot-instructions.md` defines the expected
-Recall → Reason/Act → Learn/Store workflow. It tells Copilot to recall before
-non-trivial work, learn reusable outcomes before completion, and avoid storing
-secrets or user-specific details.
+On startup and shutdown, transient context is evicted after 14 days, eligible
+lessons are promoted to OKF Markdown, and SQLite performs incremental vacuuming.
+Shutdown retries a WAL checkpoint with truncation when another connection is
+temporarily active. Context retrieval tracks access counts and timestamps;
+frequently accessed or explicitly fixed lessons are promoted. Three consecutive
+successful outcomes also promote an episodic lesson to durable OKF. A vector
+similarity check appends insights to an existing durable document when
+similarity is at least 85%, avoiding duplicate OKF files.
 
-## Quick start
+Outcome counts and events live in relational SQLite tables separate from
+embeddings. One failure only lowers the smoothed success estimate; it never
+deletes or permanently suppresses a memory. A provisional anti-pattern note
+is created only after failures are reported from three distinct sessions, and
+requires review before being promoted. Memory scope stores only a hash of the
+working-directory path; source references remain repository-relative.
 
-Requirements: Python 3.10+ and a working C/C++ build environment if one of
-the Python dependencies needs to compile.
+Short-lived search results use a 0.5 tier weight and exponential age decay,
+and are restricted to the most recent 48 hours. Durable knowledge uses a 1.0
+tier weight. Candidate ranking additionally uses
+`(successes + 1) / (total_uses + 2)` with age decay, then applies its sigmoid
+factor to the weighted RRF score.
 
-```bash
-git clone https://github.com/Jamesockenden/Copilot-Agentic-Memory-MCP.git
-cd Copilot-Agentic-Memory-MCP
+## Setup
+
+On Windows, the setup script creates an isolated virtual environment, installs
+dependencies, and downloads/tests the embedding model once:
+
+```powershell
+.\setup-local.ps1
+```
+
+Then run the `copilot mcp add ...` command printed by the script. The model is
+cached in Hugging Face's shared user cache; configure `HF_HOME` or
+`HF_HUB_CACHE` before setup if you want to relocate it. See [SETUP.md](SETUP.md)
+for Windows/macOS/Linux setup and optional offline mode.
+
+Manual environment install:
+
+```powershell
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m agentic_memory_mcp
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-The server communicates over stdio, so the last command normally runs as a
-child process of Copilot CLI rather than as a standalone network service.
+## Running the Server
 
-## Register with Copilot CLI
-
-Add an entry to the user's Copilot CLI setup configuration. Use an absolute
-path to the cloned repository and the Python executable from its virtual
-environment:
-
-```yaml
-tools:
-  - name: agentic-memory
-    type: mcp
-    path: C:\path\to\Copilot-Agentic-Memory-MCP
-    command: C:\path\to\Copilot-Agentic-Memory-MCP\.venv\Scripts\python.exe
-    args:
-      - -m
-      - agentic_memory_mcp
-    description: >-
-      Persistent memory for Copilot sessions. Call learn for reusable fixes,
-      decisions, constraints, or workflows. Never save secrets or credentials.
+```powershell
+.\.venv\Scripts\python.exe __main__.py
 ```
 
-On macOS/Linux, use the equivalent absolute paths and `.venv/bin/python`.
-Keep this registration in the local Copilot configuration; do not commit
-machine-specific paths or credentials.
+## Tools Available
 
-## Data locations and privacy
+- `recall(query, limit, working_directory, branch, touched_files, include_full_content)`: Retrieve compact excerpts by default; results include tier-qualified `memory_id` citations. Full content is optional and capped.
+- `record_outcome(memory_ids_used, outcome, signal, session_id)`: Report success, failure, or user correction for cited memories
+- `store_okf(title, content, category, working_directory, branch)`: Store durable knowledge
+- `store_context(title, content, lesson, ttl_days, memory_kind, working_directory, branch)`: Store short-lived context or an explicit anti-pattern
+- `store_skill(name, steps, tags, working_directory, branch)`: Store task skills
+- `learn(observation, category)`: Log learning from session
+- `mark_lesson_fixed(context_id)`: Promote a confirmed lesson to durable knowledge
 
-By default, data is kept locally under `~/.copilot`:
+The `learn` tool is available by default, but availability is not an instruction
+to write on every task. Call it only when there is both a reusable lesson and an
+external ground-truth signal (verified tests/builds, tool results, PR outcomes,
+or explicit user feedback). Report outcomes only for memories actually used
+and only when evidence supports the outcome and causal link. No signal or no
+reusable lesson means no memory write. Supply a stable session identifier only
+when known; never fabricate one. Lessons use the configured
+`AUTO_LEARNING_TTL_DAYS` retention period. Do not store secrets, raw logs,
+transcripts, or ephemeral personal details.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AGENTIC_MEMORY_DB` | `~/.copilot/agentic_memory.db` | SQLite database |
-| `AGENTIC_MEMORY_KNOWLEDGE_DIR` | `<database directory>/knowledge` | Durable Markdown |
-| `AGENTIC_MEMORY_SKILLS_DIR` | `<database directory>/skills` | Skill Markdown |
-| `AGENTIC_MEMORY_LOG` | `<database directory>/agentic_memory.log` | Optional log path |
+## Memory Format
 
-These values can point to a separate local directory. The database, generated
-Markdown, logs, virtual environments, and caches are ignored by Git. Do not
-store passwords, access tokens, private keys, confidential source, or
-user-specific ephemeral details in memory.
+### Durable Knowledge (OKF)
+```markdown
+# Architecture: User Authentication
 
-## Examples and verification
+## Overview
+JWT-based authentication system...
 
-Load synthetic example data into the configured local database:
-
-```bash
-python examples.py
-python verify_system.py
+## Rules
+- Tokens expire after 24 hours
+- Refresh tokens valid for 30 days
 ```
 
-Run the tests:
+### Task Skills
+```markdown
+# Deploy to Production
 
-```bash
-python test_memory.py
+## Steps
+1. Run tests: `npm test`
+2. Build: `npm run build`
+3. Deploy: `npm run deploy`
 ```
-
-The first embedding operation downloads the `all-MiniLM-L6-v2` model through
-`sentence-transformers`; later operations reuse the local model cache.
-
-## Relationship to the design
-
-This implementation follows the accompanying design article's
-Recall → Reason/Act → Learn/Store loop. Copilot recalls only ranked snippets,
-then can write a reusable observation with `learn` before finishing a task.
-The memory server is complementary to specialised agents: it records
-project knowledge and lessons, rather than defining an agent's permissions or
-role.

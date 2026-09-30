@@ -9,7 +9,7 @@ KNOWLEDGE_DIR = Path(os.environ.get("AGENTIC_MEMORY_KNOWLEDGE_DIR", DB_PATH.pare
 SKILLS_DIR = Path(os.environ.get("AGENTIC_MEMORY_SKILLS_DIR", DB_PATH.parent / "skills"))
 
 # Embedding model settings
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Lightweight, fast model
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 
 # Default TTL for short-lived context (days)
@@ -35,9 +35,12 @@ CLEANUP_INTERVAL_HOURS = 24
 AUTO_LEARNING_ENABLED = True
 AUTO_LEARNING_TTL_DAYS = DEFAULT_CONTEXT_TTL
 AUTO_LEARNING_INSTRUCTION = (
-    "When a task reveals a reusable fix, decision, constraint, or workflow, "
-    "call the agentic-memory learn tool before completing the response. "
-    "Do not save secrets, credentials, or user-specific ephemeral details."
+    "Use recall once for relevant non-trivial work; results are compact by default. "
+    "Write memory only for a reusable lesson supported by verified tests/builds, "
+    "tool results, PR outcomes, or explicit user feedback. Report outcomes only "
+    "for recalled memories actually used and causally related to the evidence. "
+    "No signal or reusable lesson means no memory write. Never store secrets, "
+    "credentials, private data, raw logs, or machine-specific paths."
 )
 
 # Logging

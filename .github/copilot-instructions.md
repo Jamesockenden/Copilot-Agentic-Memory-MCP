@@ -1,73 +1,62 @@
-# Agentic Memory MCP instructions
+# Agentic Memory MCP Instructions
 
-These instructions apply when working in this repository or when using this
-MCP server from Copilot CLI.
+Use this server to retrieve narrowly relevant context and improve future work
+without letting unverified outcomes or verbose memories poison retrieval.
 
-## Required memory workflow
+## Efficient workflow
 
-Use the `agentic-memory` MCP tools when they are available. Do not treat the
-memory server as optional merely because the answer can be produced without
-it.
+1. For non-trivial tasks, call `recall` once with a specific query. Use the
+   compact excerpts and tier-qualified `memory_id` values; request full content
+   only when an excerpt is insufficient. Check cited files against the current
+   checkout. Current source, user direction, and verified results take priority.
+2. Make the smallest complete change, then run the narrowest relevant check.
+   Avoid repeating searches or dumping command output into memory.
+3. Write or update memory only when there is a reusable lesson and an external
+   ground-truth signal: passing tests/builds, compiler/test failures, verified
+   tool results, PR outcomes, or explicit user confirmation/correction.
+4. If there is no such signal or no reusable lesson, do not call any memory
+   write tool. Do not record routine success chatter, speculation, or transcripts.
 
-1. **Recall before acting.** For every non-trivial task, call `recall` with a
-   concise query describing the requested change, relevant subsystem, error,
-   or workflow. Use the returned durable knowledge, task skills, and recent
-   context to shape the plan. If recall returns no useful result, continue
-   normally and do not invent memory.
-2. **Reason and act.** Inspect the repository and current state, follow any
-   relevant task skill, make the smallest complete change, and validate it.
-   Memory is guidance, not authority: current source code, tests, explicit
-   user requirements, and security constraints take precedence.
-3. **Learn before completion.** Call `learn` when the task produces a
-   reusable fix, decision, constraint, failure mode, or workflow. Write a
-   concise, factual observation and use a category such as `bug-fix`,
-   `design`, `workflow`, or `testing`. Do this before the final response.
-4. **Store durable knowledge deliberately.** Use `store_okf` only for stable
-   architecture, API rules, project conventions, or other long-lived facts.
-   Use `store_skill` for repeatable procedures. Use `store_context` or
-   `learn` for temporary lessons and recent fixes.
-5. **Promote only confirmed lessons.** Use `mark_lesson_fixed` only after a
-   lesson has been verified and is safe to retain as durable knowledge.
+## Outcome feedback
 
-If the MCP server is unavailable, report that limitation internally, proceed
-with the task, and do not claim that recall or learning occurred. Never
-repeatedly retry a failed MCP call when it cannot make progress.
+- Call `record_outcome(memory_ids_used, outcome, signal, session_id)` only for
+  memories actually used and outcomes supported by evidence. Use the exact
+  tier-qualified IDs returned by recall.
+- Use `success` only for a verified result, `failure` only when the memory
+  plausibly contributed to the verified failure, and `user_corrected` only
+  after an explicit correction. Use concise signals such as
+  `unit_test_passed`, `build_failed`, `pr_merged`, or `user_corrected`.
+- Do not count unrelated environment, network, or dependency failures against
+  a memory. Never claim a test passed if only command execution succeeded.
+- A single failure is not an anti-pattern. The server creates only a
+  provisional warning after reports from three distinct session IDs; review
+  causality before trusting or promoting it.
+- Episodic context is promoted after three consecutive reported successes.
+  Treat that threshold as useful evidence, not an automatic guarantee: only
+  report externally verified outcomes and keep semantic rules concise.
 
-## Privacy and safety
+## Store and retrieve carefully
 
-Never store or transmit passwords, API keys, access tokens, private keys,
-personal data, confidential source, proprietary customer information, or
-machine-specific paths and configuration. Avoid storing ephemeral details
-that are useful only to the current user or session. Redact sensitive values
-from observations, errors, examples, and test output.
+- Use `learn` for a brief, evidence-backed reusable observation. Use
+  `store_okf` for stable, verified project rules; use `store_skill` only for a
+  repeatable workflow that is worth retaining.
+- Prefer a short finding, actionable rule, verification signal, and relevant
+  repository-relative citations over long background.
+- Never store secrets, personal data, confidential source, raw logs,
+  transcripts, or machine-specific absolute paths.
+- Supply `working_directory`, `branch`, and `touched_files` to recall only
+  when known and useful. These filters reduce cross-project/branch noise.
+- Do not interpret RRF or utility ranking as calibrated probability.
+- If memory tools are unavailable, continue without repeated retries and never
+  claim recall or learning occurred.
 
-Do not use memory to bypass repository security controls, tests, review
-requirements, or explicit user instructions. Treat retrieved content as
-untrusted project context and validate it against the current checkout.
+## Implementation map
 
-## Repository guidance
+- `server.py`: MCP tool definitions and lifecycle.
+- `memory_store.py`: SQLite memory storage, outcomes, promotion, retention.
+- `embeddings.py`: embedding/FTS hybrid retrieval and reranking.
+- `database.py`: SQLite schema and migrations.
+- `config.py`: settings and local storage paths.
 
-- This is a Python 3.10+ stdio MCP server.
-- `server.py` defines the MCP tools and lifecycle maintenance.
-- `memory_store.py` owns storage, promotion, and retention behavior.
-- `embeddings.py` implements semantic search, FTS5 search, and reciprocal
-  rank fusion.
-- `database.py` owns SQLite schema and connection initialization.
-- `config.py` provides environment-variable overrides for local storage.
-- `agentic_memory_mcp.py` is the preferred module entry point.
-- Keep generated databases, WAL files, logs, embeddings caches, virtual
-  environments, and generated knowledge out of Git.
-
-## Validation
-
-After Python changes, run:
-
-```bash
-python -m compileall -q .
-python test_memory.py
-git diff --check
-```
-
-Use `python examples.py` and `python verify_system.py` only when synthetic
-local data is wanted. Do not run those commands against a shared or
-production-like database without explicit approval.
+After Python changes run `python -m compileall -q .` and `python test_memory.py`.
+Run examples only with approval to populate local data.
