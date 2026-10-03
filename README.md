@@ -61,6 +61,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+The MCP SDK is constrained to version 1.x because current Copilot CLI clients
+request protocol `2025-11-25`, which MCP SDK 2.x does not negotiate.
+
 ## Running the Server
 
 ```powershell
